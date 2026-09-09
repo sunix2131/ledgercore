@@ -125,7 +125,7 @@ public class LedgerService {
         validateAndLock(postings);
         return new LedgerTransaction(
                 reversalId,
-                "reversal:%s".formatted(original.reference()),
+                "reversal:%s".formatted(original.id()),
                 reason.trim(),
                 original.id(),
                 normalizedMetadata(actor, "anonymous"),
@@ -268,7 +268,12 @@ public class LedgerService {
     }
 
     private static String normalizedMetadata(String value, String fallback) {
-        return value == null || value.isBlank() ? fallback : value.trim();
+        String normalized = value == null || value.isBlank() ? fallback : value.trim();
+        if (normalized.length() > 160) {
+            throw new LedgerException(HttpStatus.BAD_REQUEST, "invalid_metadata",
+                    "X-Actor and X-Request-Id must not exceed 160 characters");
+        }
+        return normalized;
     }
 
     private static LedgerException unprocessable(String code, String message) {

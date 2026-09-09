@@ -101,9 +101,9 @@ public class LedgerRepository {
     public void insertTransaction(LedgerTransaction transaction) {
         jdbc.sql("""
                         INSERT INTO ledger_transaction
-                            (id, reference, description, reversal_of, created_by, request_id, created_at)
+                            (id, reference, description, reversal_of, created_by, request_id, created_at, posting_count)
                         VALUES
-                            (:id, :reference, :description, :reversalOf, :createdBy, :requestId, :createdAt)
+                            (:id, :reference, :description, :reversalOf, :createdBy, :requestId, :createdAt, :postingCount)
                         """)
                 .param("id", transaction.id())
                 .param("reference", transaction.reference())
@@ -112,6 +112,7 @@ public class LedgerRepository {
                 .param("createdBy", transaction.createdBy())
                 .param("requestId", transaction.requestId())
                 .param("createdAt", databaseTime(transaction.createdAt()))
+                .param("postingCount", transaction.postings().size())
                 .update();
 
         for (Posting posting : transaction.postings()) {

@@ -24,6 +24,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
@@ -44,6 +46,7 @@ class LedgerIntegrationIT {
     @Autowired AccountService accounts;
     @Autowired LedgerService ledger;
     @Autowired JdbcClient jdbc;
+    @Autowired PlatformTransactionManager transactionManager;
 
     @BeforeEach
     void clearLedger() {
@@ -250,6 +253,101 @@ class LedgerIntegrationIT {
                         .param("id", transaction.id())
                         .update())
                 .hasMessageContaining("immutable");
+    }
+
+    @Test
+    void databaseRejectsAppendingBalancedPostingsToCommittedHistory() {
+        Account cash = account("cash", EntrySide.DEBIT, false);
+        Account equity = account("equity", EntrySide.CREDIT, false);
+        UUID id = ledger.create(balanced("sealed", cash, EntrySide.DEBIT, equity, EntrySide.CREDIT, 100),
+                "sealed-key", "test", "request").transaction().id();
+
+        assertThatThrownBy(() -> new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            insertPosting(id, cash.id(), "DEBIT", 20, "USD");
+            insertPosting(id, equity.id(), "CREDIT", 20, "USD");
+        })).hasStackTraceContaining("immutable posting set");
+        assertThat(ledger.get(id).postings()).hasSize(2);
+        assertThat(accounts.balance(cash.id())).isEqualTo(100);
+    }
+
+    @Test
+    void databaseRejectsUnbalancedDirectSqlWrites() {
+        Account cash = account("cash", EntrySide.DEBIT, false);
+        Account equity = account("equity", EntrySide.CREDIT, false);
+        UUID id = UUID.randomUUID();
+        assertThatThrownBy(() -> new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            insertTransactionHeader(id);
+            insertPosting(id, cash.id(), "DEBIT", 100, "USD");
+            insertPosting(id, equity.id(), "CREDIT", 99, "USD");
+        })).hasStackTraceContaining("postings must balance");
+        assertThat(count("ledger_transaction")).isZero();
+        assertThat(count("posting")).isZero();
+    }
+
+    @Test
+    void databaseRejectsEmptyTransactionsAndWrongCurrency() {
+        assertThatThrownBy(() -> insertTransactionHeader(UUID.randomUUID()))
+                .hasStackTraceContaining("posting set");
+        Account cash = account("cash", EntrySide.DEBIT, false);
+        Account equity = account("equity", EntrySide.CREDIT, false);
+        UUID id = UUID.randomUUID();
+        assertThatThrownBy(() -> new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            insertTransactionHeader(id);
+            insertPosting(id, cash.id(), "DEBIT", 100, "EUR");
+            insertPosting(id, equity.id(), "CREDIT", 100, "EUR");
+        })).hasStackTraceContaining("posting currency must match");
+        assertThat(count("ledger_transaction")).isZero();
+    }
+
+    @Test
+    void accountDenominationCannotReinterpretHistoricalPostings() {
+        Account cash = account("cash", EntrySide.DEBIT, false);
+        assertThatThrownBy(() -> jdbc.sql("UPDATE account SET normal_side = 'CREDIT' WHERE id = :id")
+                .param("id", cash.id()).update()).hasMessageContaining("immutable");
+        assertThatThrownBy(() -> jdbc.sql("UPDATE account SET currency = 'EUR' WHERE id = :id")
+                .param("id", cash.id()).update()).hasMessageContaining("immutable");
+    }
+
+    @Test
+    void maximumLengthReferenceCanBeReversedAndReplayed() {
+        Account cash = account("cash", EntrySide.DEBIT, false);
+        Account equity = account("equity", EntrySide.CREDIT, false);
+        var original = ledger.create(balanced("x".repeat(160), cash, EntrySide.DEBIT, equity, EntrySide.CREDIT, 100),
+                "long-ref", "test", "request").transaction();
+        var reverse = ledger.reverse(original.id(), "correction", "reverse", "test", "request");
+        var replay = ledger.reverse(original.id(), "correction", "reverse", "test", "request");
+        assertThat(reverse.transaction().reference()).hasSizeLessThanOrEqualTo(160);
+        assertThat(replay.replay()).isTrue();
+        assertThat(replay.transaction().id()).isEqualTo(reverse.transaction().id());
+        assertThat(accounts.balance(cash.id())).isZero();
+    }
+
+    @Test
+    void oversizedAuditMetadataDoesNotClaimAnIdempotencyKey() {
+        Account cash = account("cash", EntrySide.DEBIT, false);
+        Account equity = account("equity", EntrySide.CREDIT, false);
+        var request = balanced("metadata", cash, EntrySide.DEBIT, equity, EntrySide.CREDIT, 100);
+        assertThatThrownBy(() -> ledger.create(request, "metadata", "x".repeat(161), "request"))
+                .isInstanceOf(LedgerException.class).hasMessageContaining("160");
+        assertThat(count("idempotency_record")).isZero();
+        assertThat(ledger.create(request, "metadata", "test", "request").replay()).isFalse();
+    }
+
+    private void insertTransactionHeader(UUID id) {
+        jdbc.sql("""
+                INSERT INTO ledger_transaction
+                    (id, reference, description, created_by, request_id, created_at, posting_count)
+                VALUES (:id, :reference, 'direct SQL test', 'test', 'test', now(), 2)
+                """).param("id", id).param("reference", id.toString()).update();
+    }
+
+    private void insertPosting(UUID transactionId, UUID accountId, String side, long amount, String currency) {
+        jdbc.sql("""
+                INSERT INTO posting (id, transaction_id, account_id, side, amount_minor, currency, created_at)
+                VALUES (:id, :transactionId, :accountId, CAST(:side AS entry_side), :amount, :currency, now())
+                """).param("id", UUID.randomUUID()).param("transactionId", transactionId)
+                .param("accountId", accountId).param("side", side).param("amount", amount)
+                .param("currency", currency).update();
     }
 
     private Account account(String name, EntrySide normalSide, boolean allowNegative) {

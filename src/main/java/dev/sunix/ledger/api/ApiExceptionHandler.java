@@ -13,6 +13,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 @RestControllerAdvice
 public class ApiExceptionHandler {
@@ -38,10 +39,11 @@ public class ApiExceptionHandler {
     @ExceptionHandler({
         ConstraintViolationException.class,
         HttpMessageNotReadableException.class,
-        MissingRequestHeaderException.class
+        MissingRequestHeaderException.class,
+        MethodArgumentTypeMismatchException.class
     })
     ResponseEntity<ErrorResponse> badRequest(Exception exception) {
-        return response(HttpStatus.BAD_REQUEST, "invalid_request", exception.getMessage());
+        return response(HttpStatus.BAD_REQUEST, "invalid_request", "Check request fields, headers and parameter formats");
     }
 
     @ExceptionHandler(DataIntegrityViolationException.class)

@@ -27,7 +27,7 @@ public final class LedgerApiModels {
     public record CreateTransactionRequest(
             @NotBlank @Size(max = 160) String reference,
             @NotBlank @Size(max = 500) String description,
-            @NotEmpty @Size(min = 2, max = 100) List<@Valid PostingRequest> postings) {}
+            @NotEmpty @Size(min = 2, max = 100) List<@NotNull @Valid PostingRequest> postings) {}
 
     public record PostingRequest(
             @NotNull UUID accountId,

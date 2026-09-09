@@ -1,10 +1,8 @@
 # LedgerCore
 
-A small double-entry ledger focused on write correctness: balanced postings, immutable history, idempotent commands, deterministic account locking and explicit reversals.
+Java and PostgreSQL service for double-entry postings, account balances and reversals. Repeated commands return the original result; competing withdrawals lock the affected accounts before checking available funds.
 
-This is not a banking UI or a CRUD example. It is the accounting boundary that another product could call when money-like value moves between accounts.
-
-This project explores a class of problems I have worked with professionally. It was designed independently from scratch and contains no client/company source code, data or proprietary business rules.
+An independent project with synthetic examples. No employer code or customer data.
 
 ## Model
 
@@ -18,7 +16,7 @@ ledger transaction (immutable)
 
 An account declares `DEBIT` or `CREDIT` as its normal side. A posting on that side increases its balance; a posting on the opposite side decreases it. Accounts may reject negative projected balances.
 
-Balances are derived from postings rather than updated in a mutable balance column. PostgreSQL triggers reject updates and deletes on both transactions and postings.
+Balances are derived from postings. Each transaction records its immutable posting count. Deferred PostgreSQL constraints check the complete posting set at commit: the count must match, each currency must balance, and posting currencies must match their accounts. This also rejects later additions to an existing transaction. Updates and deletes of transactions and postings are rejected; an account's currency and normal side cannot be changed.
 
 ## Write path
 
@@ -111,6 +109,6 @@ The integration tests use a disposable PostgreSQL container and cover duplicate 
 
 - One service instance may handle concurrent writes; coordination is in PostgreSQL, not in process memory.
 - Currency conversion is deliberately outside the ledger. A transaction can contain several currencies only when each currency balances independently.
-- Authentication, authorization, chart-of-accounts policy, period closing and financial reporting are integration concerns, not part of this first slice.
+- Authentication, authorization, chart-of-accounts policy, period closing and financial reporting are not implemented. `X-Actor` is caller-supplied audit metadata, not an authenticated identity. Run behind a trusted application boundary.
 - Amounts use signed 64-bit minor units. The service rejects arithmetic overflow; currencies with nonstandard decimal exponents are interpreted by callers.
-- The pagination endpoint uses offset pagination for a compact first slice. A production-scale history API would use a stable `(created_at, id)` cursor.
+- History uses offset pagination ordered by `(created_at, id)`; concurrent inserts can shift pages.
